@@ -1,3 +1,7 @@
-pyTelegramBotAPI==4.14.0
-requests==2.31.0
-python-dotenv==1.0.0
+echo "selenium
+undetected-chromedriver
+beautifulsoup4
+lxml
+requests
+python-dotenv
+pyTelegramBotAPI" > requirements.txt
