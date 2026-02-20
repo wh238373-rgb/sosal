@@ -102,14 +102,19 @@ class CatapultAnalyzer:
 
                         full_url = href if href.startswith('http') else f"{self.base_url}{href}"
 
+                        # ВИПРАВЛЕНО: Уникаємо backslash в f-string
+                        token_id_match = re.search(r'/tokens/(\d+)', href)
+                        token_id = token_id_match.group(1) if token_id_match else 'unknown'
+                        token_name = text if text else f"Token {token_id}"
+
                         tokens_found.append({
                             'url': full_url,
-                            'name': text if text else f"Token {re.search(r'/tokens/(\d+)', href).group(1)}",
-                            'token_id': re.search(r'/tokens/(\d+)', href).group(1)
+                            'name': token_name,
+                            'token_id': token_id
                         })
 
             if tokens_found:
-                logger.info(f"✅ Витягнуто {len(tokens_found)} реальних токенів")
+                logger.info(f"✅ Вит��гнуто {len(tokens_found)} реальних токенів")
             else:
                 logger.warning("⚠️ Реальних токенів не знайдено")
                 # Дебаг: показуємо що нашли
@@ -158,7 +163,7 @@ class CatapultAnalyzer:
                 change = float(pump_match.group(1))
                 if change >= 50:
                     token_data['patterns'].append('🚀MEGA_PUMP')
-                    self.pattern_frequency['🚀MEGA_PUMP'] += 1
+                    self.pattern_frequency['����MEGA_PUMP'] += 1
                 elif change >= 20:
                     token_data['patterns'].append('🚀PUMP')
                     self.pattern_frequency['🚀PUMP'] += 1
