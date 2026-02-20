@@ -3,238 +3,137 @@ import logging
 import telebot
 import asyncio
 import json
-import sys
 from datetime import datetime
 from dotenv import load_dotenv
 from catapult_analyzer import scan_catapult
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import threading
 import time
-import traceback
 
 load_dotenv()
 
-# 🔧 Налаштування логування
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),  # 📝 Логи у файл
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
-    logger.error("❌ TELEGRAM_TOKEN не знайдений у .env!")
-    sys.exit(1)
+bot = telebot.TeleBot(TOKEN, parse_mode='HTML', threaded=True)  # 🔧 Змінив на HTML замість Markdown
 
-bot = telebot.TeleBot(TOKEN, parse_mode='Markdown', threaded=True)
-
-# 🔄 Глобальні змінні
 latest_report = None
 scanning = False
-scan_error_count = 0
-last_scan_time = None
 
 
 def update_report():
-    """🔄 Оновлює звіт кожні 10 хвилин"""
-    global latest_report, scanning, scan_error_count, last_scan_time
+    """Оновлює звіт кожні 10 хвилин"""
+    global latest_report, scanning
 
     while True:
         try:
             scanning = True
-            logger.info("=" * 70)
-            logger.info("🔄 ФОНОВИЙ СКАНЕР: Запускаю сканування...")
-            logger.info("=" * 70)
-
-            # 🆕 Правильна асинхронність для VPS
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                report = loop.run_until_complete(
-                    scan_catapult(headless=True, use_virtual_display=True)
-                )
-                latest_report = report
-                last_scan_time = datetime.now()
-                scanning = False
-                scan_error_count = 0
-                
-                logger.info("✅ ФОНОВИЙ СКАНЕР: Сканування завершено успішно")
-                logger.info(f"   📊 Знайдено токенів: {report['total_tokens']}")
-                logger.info(f"   📈 Паттернів: {report['total_patterns_found']}")
-                
-            finally:
-                loop.close()
-
+            logger.info("🔄 Запускаю сканування...")
+            report = asyncio.run(scan_catapult())
+            latest_report = report
+            scanning = False
+            logger.info("✅ Сканування завершено")
         except Exception as e:
-            logger.error(f"❌ ФОНОВИЙ СКАНЕР: Помилка сканування")
-            logger.error(f"   {str(e)}")
-            logger.debug(traceback.format_exc())
-            
-            scan_error_count += 1
+            logger.error(f"❌ Помилка сканування: {e}")
             scanning = False
 
-            # 🚨 Якщо багато помилок поспіль - перезавантажити
-            if scan_error_count > 5:
-                logger.critical(f"🔴 КРИТИЧНО: {scan_error_count} помилок поспіль!")
-                logger.critical("   Перезавантажу процес...")
-                os._exit(1)
-
-        # ⏰ Чекаємо 10 хвилин
-        logger.info("⏳ Фоновий сканер спить 10 хвилин...")
-        time.sleep(600)
+        time.sleep(600)  # 10 хвилин
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    """Команда /start"""
-    logger.info(f"📩 /start від {message.chat.id} (@{message.from_user.username})")
-    
-    text = """🤖 *Привіт! Я Catapult Analyzer*
+    logger.info(f"📩 Отримав /start від {message.chat.id}")
+    text = """🤖 <b>Привіт! Я Catapult Analyzer</b>
 
-Я сканую нові токени на **catapult.trade** 🚀
+Я сканую токени на catapult.trade
 
-*📋 Команди:*
+<b>Команди:</b>
 /scan - Сканувати зараз
 /report - Останній звіт
-/patterns - Статистика паттернів
-/status - Статус бота
+/patterns - Паттерни
 /help - Допомога"""
-    
     try:
         bot.reply_to(message, text)
-        logger.info("✅ /start: повідомлення відправлено")
+        logger.info("✅ Повідомлення відправлено")
     except Exception as e:
-        logger.error(f"❌ /start: помилка відправки: {e}")
-
-
-@bot.message_handler(commands=['status'])
-def status(message):
-    """🔧 Статус бота"""
-    logger.info(f"📩 /status від {message.chat.id}")
-    
-    status_text = "🤖 *СТАТУС БОТА*\n\n"
-    
-    if scanning:
-        status_text += "🔄 *Сканування:* Йде прямо зараз\n"
-    else:
-        status_text += "✅ *Сканування:* Готово\n"
-    
-    status_text += f"❌ *Помилок:* {scan_error_count}/5\n"
-    
-    if latest_report:
-        status_text += f"📊 *Токенів у звіті:* {latest_report['total_tokens']}\n"
-        status_text += f"📈 *Паттернів:* {latest_report['total_patterns_found']}\n"
-        if last_scan_time:
-            status_text += f"⏰ *Останнє сканування:* {last_scan_time.strftime('%H:%M:%S')}\n"
-    else:
-        status_text += "📊 *Звіт:* Ще немає\n"
-    
-    bot.reply_to(message, status_text)
+        logger.error(f"❌ Помилка при відправці: {e}")
 
 
 @bot.message_handler(commands=['scan'])
 def scan_now(message):
-    """Команда /scan - Сканувати одразу"""
     global latest_report, scanning
 
-    logger.info(f"📩 /scan від {message.chat.id}")
+    logger.info(f"📩 Отримав /scan від {message.chat.id}")
 
     if scanning:
-        bot.reply_to(message, "⏳ Сканування вже йде...\nСпробуйте через хвилину")
+        bot.reply_to(message, "⏳ Сканування вже йде...", parse_mode='HTML')
         return
 
-    msg = bot.reply_to(message, "🔄 Сканую токени на catapult.trade...\n⏳ Зачекайте 2-3 хвилини...")
+    msg = bot.reply_to(message, "🔄 Сканую...", parse_mode='HTML')
 
     try:
         scanning = True
-        logger.info("   🔄 Початок ручного сканування...")
-        
-        # 🆕 Правильна асинхронність
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            report = loop.run_until_complete(
-                scan_catapult(headless=True, use_virtual_display=True)
-            )
-            latest_report = report
-            scanning = False
-            
-            logger.info(f"   ✅ Ручне сканування завершено")
-            logger.info(f"      Токенів: {report['total_tokens']}")
-            logger.info(f"      Паттернів: {report['total_patterns_found']}")
+        report = asyncio.run(scan_catapult())
+        latest_report = report
+        scanning = False
 
-        finally:
-            loop.close()
-
-        # 📊 Формуємо звіт
+        # 🔧 Формуємо звіт БЕЗ емодзи в Markdown
         if report['total_tokens'] == 0:
-            text = "⚠️ *СКАНУВАННЯ*\n\n❌ Токенів не знайдено"
+            text = "<b>СКАНУВАННЯ</b>\n\n❌ Токенів не знайдено"
         else:
-            text = (f"✅ *СКАНУВАННЯ CATAPULT*\n\n"
-                    f"📊 Токенів: `{report['total_tokens']}`\n"
-                    f"📈 Паттернів: `{report['total_patterns_found']}`\n\n"
-                    f"���� *ТОП ПАТТЕРНИ:*\n")
+            text = (f"<b>СКАНУВАННЯ</b>\n\n"
+                    f"Токенів: <code>{report['total_tokens']}</code>\n"
+                    f"Паттернів: <code>{report['total_patterns_found']}</code>\n\n"
+                    f"<b>ТОП ПАТТЕРНИ:</b>\n")
 
             for pattern, count in report['top_patterns'][:5]:
-                text += f"  {pattern}: `{count}`\n"
+                # 🔧 Очищуємо емодзи з назви паттерну для безпеки
+                clean_pattern = str(pattern).strip()
+                text += f"{clean_pattern}: <code>{count}</code>\n"
 
-        # 🔘 Кнопка для показу всіх токенів
-        markup = None
+        # Додаємо кнопку для показу всіх токенів
+        markup = InlineKeyboardMarkup()
         if report['total_tokens'] > 0:
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton(
-                    f"📋 Показати {report['total_tokens']} токенів",
-                    callback_data="show_all_tokens"
-                )
-            )
+            markup.add(InlineKeyboardButton(
+                f"📋 Показати {report['total_tokens']} токенів",
+                callback_data="show_all_tokens"
+            ))
 
         bot.edit_message_text(
             text,
             message.chat.id,
             msg.message_id,
-            reply_markup=markup,
-            parse_mode="Markdown"
+            reply_markup=markup if report['total_tokens'] > 0 else None,
+            parse_mode='HTML'
         )
-        logger.info("   ✅ Звіт відправлено")
+        logger.info("✅ Звіт відправлено")
 
     except Exception as e:
-        logger.error(f"❌ /scan: помилка: {e}")
-        logger.debug(traceback.format_exc())
-        
+        logger.error(f"❌ Помилка сканування: {e}")
         try:
-            bot.reply_to(
-                message,
-                f"❌ *Помилка сканування*\n\n`{str(e)[:100]}`"
-            )
+            bot.reply_to(message, f"❌ Помилка: {str(e)[:100]}", parse_mode='HTML')
         except:
             pass
-        
         scanning = False
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "show_all_tokens")
 def show_all_tokens(call):
-    """Показати всі токени один за одним"""
+    """Виводить кожен токен окремо з паттернами"""
     global latest_report
 
-    logger.info(f"📩 show_all_tokens від {call.from_user.id}")
+    logger.info(f"📩 Натиснув кнопку показити токени: {call.from_user.id}")
 
     if not latest_report or not latest_report.get("tokens"):
-        bot.answer_callback_query(call.id, "❌ Даних немає", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Даних про токени нема", show_alert=True)
         return
 
     tokens = latest_report["tokens"]
     total = len(tokens)
 
-    bot.answer_callback_query(call.id, f"📤 Відправляю {total} токенів...")
-    logger.info(f"   📤 Почало відправку {total} токенів")
+    bot.answer_callback_query(call.id, f"📤 Відправляю {total} токенів...", show_alert=False)
+    logger.info(f"📤 Почало відправку {total} токенів")
 
     for idx, token in enumerate(tokens, 1):
         try:
@@ -242,7 +141,7 @@ def show_all_tokens(call):
             token_url = token.get("url")
             patterns = token.get("patterns", [])
 
-            # 📝 Формуємо текст
+            # 🔧 Формуємо текст про паттерни БЕЗ Markdown конфліктів
             if not patterns:
                 patterns_text = "❌ Паттернів немає"
             else:
@@ -250,161 +149,110 @@ def show_all_tokens(call):
                 for pattern in patterns:
                     pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
 
-                patterns_text = "🔍 *Паттерни:*\n"
-                for pattern, count in sorted(pattern_counts.items()):
-                    patterns_text += f"  {pattern}: `{count}`\n"
+                patterns_text = "<b>Паттерни:</b>\n"
+                for pattern, count in pattern_counts.items():
+                    clean_pattern = str(pattern).strip()
+                    patterns_text += f"{clean_pattern}: <code>{count}</code>\n"
 
-            token_text = f"*#{idx}. {token_name}*\n\n{patterns_text}"
+            token_text = f"<b>#{idx}. {token_name}</b>\n\n{patterns_text}"
 
-            # 🔘 Кнопка
+            # Додаємо кнопку посилання
             markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton("🔗 Перейти на Catapult", url=token_url)
-            )
+            markup.add(InlineKeyboardButton("🔗 Перейти до токену", url=token_url))
 
             bot.send_message(
                 call.message.chat.id,
                 token_text,
                 reply_markup=markup,
-                parse_mode="Markdown"
+                parse_mode='HTML'
             )
 
-            # ⏱️ Затримка щоб не спамити
-            time.sleep(0.25)
+            time.sleep(0.3)
 
         except Exception as e:
-            logger.error(f"❌ show_all_tokens: помилка токена #{idx}: {e}")
+            logger.error(f"❌ Помилка при відправці токена #{idx}: {e}")
             continue
 
-    logger.info(f"   ✅ Відправлено {total} токенів")
+    logger.info(f"✅ Відправлено {total} токенів")
 
 
 @bot.message_handler(commands=['report'])
 def show_report(message):
-    """Показати останній звіт"""
     global latest_report
 
-    logger.info(f"📩 /report від {message.chat.id}")
+    logger.info(f"📩 Отримав /report від {message.chat.id}")
 
     if not latest_report:
-        bot.reply_to(message, "❌ Даних немає\n\nЗапустіть `/scan`", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Даних немає. Запустіть /scan", parse_mode='HTML')
         return
 
-    text = f"""📊 *ЗВІТ CATAPULT*
+    text = f"""<b>ЗВІТ</b>
 
-📌 Токенів: `{latest_report['total_tokens']}`
-📌 Паттернів: `{latest_report['total_patterns_found']}`
+Токенів: <code>{latest_report['total_tokens']}</code>
+Паттернів: <code>{latest_report['total_patterns_found']}</code>
 
-🔥 *ТОП ПАТТЕРНИ (ТОП 10):*
+<b>ТОП ПАТТЕРНИ (ТОП 10):</b>
 """
 
     for idx, (pattern, count) in enumerate(latest_report['top_patterns'][:10], 1):
-        text += f"{idx}. {pattern}: `{count}`\n"
+        clean_pattern = str(pattern).strip()
+        text += f"{idx}. {clean_pattern}: <code>{count}</code>\n"
 
-    bot.reply_to(message, text)
+    bot.reply_to(message, text, parse_mode='HTML')
 
 
 @bot.message_handler(commands=['patterns'])
 def show_patterns(message):
-    """Показати статистику всіх паттернів"""
     global latest_report
 
-    logger.info(f"📩 /patterns від {message.chat.id}")
+    logger.info(f"📩 Отримав /patterns від {message.chat.id}")
 
-    if not latest_report or not latest_report['top_patterns']:
-        bot.reply_to(message, "❌ Даних немає\n\nЗапустіть `/scan`", parse_mode="Markdown")
+    if not latest_report:
+        bot.reply_to(message, "❌ Даних немає", parse_mode='HTML')
         return
 
-    text = "🔍 *СТАТИСТИКА ПАТТЕРНІВ*\n\n"
+    text = "<b>СТАТИСТИКА ПАТТЕРНІВ</b>\n\n"
 
     for pattern, count in latest_report['top_patterns']:
-        bar = "▪" * min(count, 20)  # Візуальна шкала
-        text += f"{pattern}: {bar} ({count})\n"
+        clean_pattern = str(pattern).strip()
+        bar = "▪" * min(count, 15)
+        text += f"{clean_pattern}: {bar} ({count})\n"
 
-    bot.reply_to(message, text)
+    bot.reply_to(message, text, parse_mode='HTML')
 
 
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
-    """Команда /help"""
-    logger.info(f"📩 /help від {message.chat.id}")
-    
-    text = """📖 *ДОПОМОГА*
+    logger.info(f"📩 Отримав /help від {message.chat.id}")
+    text = """<b>ДОПОМОГА</b>
 
-*Команди:*
-/scan - 🔄 Сканування прямо зараз
-/report - 📊 Останній звіт
-/patterns - 🔍 Статистика паттернів
-/status - 🤖 Статус бота
-/help - 📖 Ця допомога
-
-*Автоматичне сканування:* Кожні 10 хвилин ⏰
-
-*Паттерни:*
-⏰NEW - Новий токен
-🚀PUMP - Зростання ціни
-📈VOLUME - Обсяг торгів
-🔒LOCK - Блокування ліквідності
-📱SOCIAL - Соціальні мережі
-👥HOLDERS - Кількість власників
-🚨RUG - Ризик скама
-📉DIP - Падіння ціни
-💰MCAP - Капіталізація
-💎HIGH_PRICE - Висока ціна"""
-    
-    bot.reply_to(message, text)
+/scan - Сканування
+/report - Звіт
+/patterns - Паттерни
+/help - Допомога"""
+    bot.reply_to(message, text, parse_mode='HTML')
 
 
 @bot.message_handler(func=lambda m: True)
 def default(message):
-    """Обробка невідомих команд"""
     logger.info(f"📩 Невідома команда від {message.chat.id}: {message.text}")
-    bot.reply_to(message, "❓ Невідома команда\n\nВикористайте `/help`", parse_mode="Markdown")
-
-
-def main():
-    """🚀 Основна функція"""
-    logger.info("=" * 70)
-    logger.info("🚀 ЗАПУСК БОТА CATAPULT ANALYZER")
-    logger.info("=" * 70)
-    
-    # 🔧 Перевіримо Telegram TOKEN
-    if not TOKEN:
-        logger.error("❌ TELEGRAM_TOKEN не знайдений!")
-        return
-    
-    logger.info(f"✅ TOKEN завантажений: {TOKEN[:10]}...")
-    
-    # 🔄 Запускаємо фоновий сканер
-    logger.info("\n🔄 Запускаю фоновий сканер...")
-    scanner_thread = threading.Thread(target=update_report, daemon=True)
-    scanner_thread.start()
-    logger.info("✅ Фоновий сканер запущений (оновлення кожні 10 хвилин)")
-
-    logger.info("\n📱 БОТ АКТИВНИЙ! Чекаю команди...\n")
-
-    # 🔄 Запускаємо бот з обробкою помилок
-    while True:
-        try:
-            bot.infinity_polling(
-                timeout=30,
-                long_polling_timeout=30,
-                skip_pending=True
-            )
-        except Exception as e:
-            logger.error(f"⚠️ Помилка polling: {e}")
-            logger.debug(traceback.format_exc())
-            logger.info("⏳ Перезавантаження за 5 сек...")
-            time.sleep(5)
+    bot.reply_to(message, "❓ Невідома команда. Введіть /help", parse_mode='HTML')
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("\n🛑 БОТ ЗУПИНЕНИЙ (Ctrl+C)")
-        sys.exit(0)
-    except Exception as e:
-        logger.critical(f"🔴 КРИТИЧНА ПОМИЛКА: {e}")
-        logger.debug(traceback.format_exc())
-        sys.exit(1)
+    logger.info("🚀 Запускаю бота...")
+
+    # Запускаємо фоновий сканер
+    scanner_thread = threading.Thread(target=update_report, daemon=True)
+    scanner_thread.start()
+    logger.info("✅ Фоновий сканер запущений")
+
+    logger.info("📱 Бот активний!")
+
+    # Запускаємо бот з обробкою помилок
+    while True:
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=30, skip_pending=True)
+        except Exception as e:
+            logger.error(f"⚠️ Помилка polling: {e}")
+            time.sleep(5)
