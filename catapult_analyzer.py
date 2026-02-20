@@ -14,15 +14,31 @@ logger = logging.getLogger(__name__)
 
 
 class CatapultAnalyzer:
-    def __init__(self, headless=True):
+    def __init__(self, headless=False):  # 🔧 ЗМІНИВ НА False!
         self.driver = None
         self.all_tokens = []
         self.pattern_frequency = defaultdict(int)
         self.base_url = "https://catapult.trade"
         self.headless = headless
+        self.display = None
+
+    def init_virtual_display(self):
+        """Запускає Virtual Display для VPS"""
+        if not self.headless or os.name != 'posix':
+            return True
+        
+        try:
+            from pyvirtualdisplay import Display
+            self.display = Display(visible=0, size=(1920, 1080))
+            self.display.start()
+            logger.info("✅ Virtual Display запущений")
+            return True
+        except:
+            logger.warning("⚠️ Virtual Display не доступний")
+            return True
 
     def init_driver(self):
-        """Ініціалізує браузер для VPS"""
+        """Ініціалізує браузер БЕЗ headless для JS рендеру"""
         try:
             logger.info("🌐 Запускаю браузер...")
 
@@ -32,19 +48,26 @@ class CatapultAnalyzer:
             options.add_argument('--disable-gpu')
             options.add_argument('--disable-blink-features=AutomationControlled')
             
+            # 🔧 БЕЗ --headless!
             if self.headless:
-                options.add_argument('--headless')
-                options.add_argument('--disable-extensions')
-                options.add_argument('--disable-plugins')
-                options.add_argument('--disable-images')
-                logger.info("   💡 Headless режим активований")
-            else:
-                options.add_argument('--start-maximized')
-
-            options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                options.add_argument('--virtual-display-size=1920x1080')
+                logger.info("   💡 Virtual режим")
+            
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-plugins')
+            options.add_argument('--disable-background-networking')
+            options.add_argument('--disable-breakpad')
+            options.add_argument('--disable-client-side-phishing-detection')
+            options.add_argument('--disable-default-apps')
+            options.add_argument('--disable-hang-monitor')
+            options.add_argument('--disable-popup-blocking')
+            options.add_argument('--disable-prompt-on-repost')
+            options.add_argument('--disable-sync')
+            
+            options.add_argument('user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
             self.driver = uc.Chrome(options=options, version_main=None, use_subprocess=False)
-            self.driver.set_page_load_timeout(40)
+            self.driver.set_page_load_timeout(50)
             
             logger.info("✅ Браузер запущений")
             return True
@@ -54,32 +77,37 @@ class CatapultAnalyzer:
             return False
 
     def fetch_page(self):
-        """Завантажує сторінку та чекає на елементи"""
+        """Завантажує сторінку та чекає на JS рендер"""
         try:
-            logger.info("📍 Завантажаю catapult.trade/turbo/home...")
+            logger.info("📍 Завантажаю catapult.trade...")
 
             self.driver.get(f"{self.base_url}/turbo/home?sort=deployed_at_desc")
 
-            logger.info("⏳ Чекаю завантаження контенту...")
+            logger.info("⏳ Чекаю JS рендер (20 сек)...")
+            time.sleep(20)  # 🔧 ДОВШЕ ЧЕКАЄМО!
 
-            wait = WebDriverWait(self.driver, 30)
+            # Чекаємо елементи
+            wait = WebDriverWait(self.driver, 25)
             try:
                 wait.until(
                     EC.presence_of_all_elements_located(
-                        (By.XPATH, "//a[contains(@href, '/turbo/tokens/')]")
+                        (By.CSS_SELECTOR, "a[href*='/turbo/tokens/']")
                     )
                 )
-                logger.info("✅ Контент завантажився")
+                logger.info("✅ Елементи знайдені")
             except:
-                logger.warning("⚠️ Timeout, продовжую...")
-                time.sleep(5)
+                logger.warning("⚠️ XPath timeout, але продовжую...")
 
-            logger.info("📜 Скроллю для завантаження додаткових токенів...")
-            for i in range(6):
-                self.driver.execute_script("window.scrollBy(0, 400)")
-                time.sleep(1)
+            # Агресивний скроллинг
+            logger.info("📜 Скроллю токени...")
+            for i in range(10):  # 🔧 БІЛЬШЕ СКРОЛЛІВ!
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
 
-            logger.info("✅ Сторінка завантажена")
+            # Чекаємо ще
+            time.sleep(5)
+
+            logger.info("✅ Готово для парсингу")
             return self.driver.page_source
 
         except Exception as e:
@@ -87,46 +115,80 @@ class CatapultAnalyzer:
             return None
 
     def extract_tokens(self, html: str):
-        """Витягує реальні токени з ID"""
+        """Витягує токени - спробуємо ВСІ методи"""
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, 'lxml')
 
             tokens_found = []
-            links = soup.find_all('a', href=re.compile(r'/turbo/tokens/\d+'))
+            
+            # Метод 1: CSS селектор
+            logger.info("   🔍 Метод 1: CSS селектор...")
+            links = soup.find_all('a', href=re.compile(r'/turbo/tokens/'))
+            logger.info(f"      → Знайдено: {len(links)}")
+            
+            # Метод 2: Просто фільтр
+            if len(links) == 0:
+                logger.info("   🔍 Метод 2: Прямий фільтр...")
+                all_a = soup.find_all('a')
+                links = [a for a in all_a if a.get('href') and '/turbo/tokens/' in a.get('href', '')]
+                logger.info(f"      → Знайдено: {len(links)}")
 
-            logger.info(f"📊 Знайдено {len(links)} реальних токенів")
+            # Метод 3: По data атрибутам
+            if len(links) == 0:
+                logger.info("   🔍 Метод 3: Data атрибути...")
+                links = soup.select('a[href*="turbo/tokens"]')
+                logger.info(f"      → Знайдено: {len(links)}")
+
+            logger.info(f"📊 ИТОГО: {len(links)} посилань на токени")
 
             seen_urls = set()
-
             for link in links:
                 href = link.get('href', '')
-                text = link.get_text(strip=True)
+                if not href or href in seen_urls:
+                    continue
+                    
+                if '/turbo/tokens/' not in href:
+                    continue
 
-                if href and href not in seen_urls:
-                    if re.search(r'/turbo/tokens/\d+', href):
-                        seen_urls.add(href)
+                seen_urls.add(href)
 
-                        full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                        token_id_match = re.search(r'/tokens/(\d+)', href)
-                        token_id = token_id_match.group(1) if token_id_match else 'unknown'
-                        token_name = text if text else f"Token {token_id}"
+                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                
+                # Витягуємо ID
+                token_id_match = re.search(r'/tokens/(\d+)', href)
+                token_id = token_id_match.group(1) if token_id_match else 'unknown'
+                token_name = link.get_text(strip=True) or f"Token {token_id}"
 
-                        tokens_found.append({
-                            'url': full_url,
-                            'name': token_name,
-                            'token_id': token_id
-                        })
+                tokens_found.append({
+                    'url': full_url,
+                    'name': token_name,
+                    'token_id': token_id
+                })
 
             if tokens_found:
-                logger.info(f"✅ Витягнуто {len(tokens_found)} реальних токенів")
+                logger.info(f"✅ Витягнуто {len(tokens_found)} токенів")
             else:
-                logger.warning("⚠️ Реальних токенів не знайдено")
+                logger.warning("⚠️ ТОКЕНІВ НЕ ЗНАЙДЕНО!")
+                logger.warning(f"   HTML розмір: {len(html)} символів")
+                
+                # Дебаг
+                if "Cloudflare" in html:
+                    logger.warning("   ⚠️ CLOUDFLARE ВИЯВЛЕНА!")
+                
+                all_links = soup.find_all('a', limit=30)
+                logger.warning(f"   Всього <a> тегів: {len(all_links)}")
+                if all_links:
+                    logger.warning("   Перші 5 href:")
+                    for i, l in enumerate(all_links[:5]):
+                        logger.warning(f"      {i+1}. {l.get('href')}")
 
-            return tokens_found[:20]
+            return tokens_found[:25]
 
         except Exception as e:
             logger.error(f"❌ Помилка парсингу: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def analyze_token(self, token_url: str, token_id: str):
@@ -142,7 +204,7 @@ class CatapultAnalyzer:
             logger.info(f"   🔗 Token #{token_id}")
 
             self.driver.get(token_url)
-            time.sleep(2)
+            time.sleep(3)
 
             html = self.driver.page_source
 
@@ -153,9 +215,21 @@ class CatapultAnalyzer:
                 token_data['name'] = title.get_text(strip=True)[:50]
 
             # Паттерни
-            if re.search(r'\bnew\b|\brecent\b|\blaunch\b', html, re.I):
-                token_data['patterns'].append('⏰NEW')
-                self.pattern_frequency['⏰NEW'] += 1
+            patterns = [
+                ('⏰NEW', r'\bnew\b|\brecent\b|\blaunch\b'),
+                ('📈VOLUME', r'24h|volume|trading'),
+                ('🔒LOCK', r'lock|locked|freeze|frozen'),
+                ('📱SOCIAL', r'telegram|twitter|discord|instagram'),
+                ('👥HOLDERS', r'(\d+(?:,\d+)*)\s+holders?'),
+                ('🚨RUG', r'\brug\b|\bscam\b|\bhoneypot\b'),
+                ('📉DIP', r'\bdown\b|\bdip\b|\bcrash\b'),
+                ('💰MCAP', r'market\s+cap|mcap'),
+            ]
+
+            for pattern_name, pattern_regex in patterns:
+                if re.search(pattern_regex, html, re.I):
+                    token_data['patterns'].append(pattern_name)
+                    self.pattern_frequency[pattern_name] += 1
 
             pump_match = re.search(r'\+(\d+(?:\.\d+)?)\s*%', html)
             if pump_match:
@@ -166,49 +240,6 @@ class CatapultAnalyzer:
                 elif change >= 20:
                     token_data['patterns'].append('🚀PUMP')
                     self.pattern_frequency['🚀PUMP'] += 1
-                else:
-                    token_data['patterns'].append('⬆️UP')
-                    self.pattern_frequency['⬆️UP'] += 1
-
-            if re.search(r'24h|volume|trading', html, re.I):
-                token_data['patterns'].append('📈VOLUME')
-                self.pattern_frequency['📈VOLUME'] += 1
-
-            if re.search(r'lock|locked|freeze|frozen', html, re.I):
-                token_data['patterns'].append('🔒LOCK')
-                self.pattern_frequency['🔒LOCK'] += 1
-
-            if re.search(r'telegram|twitter|discord|instagram', html, re.I):
-                token_data['patterns'].append('📱SOCIAL')
-                self.pattern_frequency['📱SOCIAL'] += 1
-
-            holders_match = re.search(r'(\d+(?:,\d+)*)\s+holders?', html, re.I)
-            if holders_match:
-                token_data['patterns'].append('👥HOLDERS')
-                self.pattern_frequency['👥HOLDERS'] += 1
-
-            if re.search(r'\brug\b|\bscam\b|\bhoneypot\b|\bdanger\b|\brisk\b', html, re.I):
-                token_data['patterns'].append('🚨RUG')
-                self.pattern_frequency['🚨RUG'] += 1
-
-            if re.search(r'\bdown\b|\bdip\b|\bcrash\b|\b-\d+%', html, re.I):
-                token_data['patterns'].append('📉DIP')
-                self.pattern_frequency['📉DIP'] += 1
-
-            if re.search(r'market\s+cap|mcap|market cap', html, re.I):
-                token_data['patterns'].append('💰MCAP')
-                self.pattern_frequency['💰MCAP'] += 1
-
-            price_match = re.search(r'\$(\d+(?:,\d+)*(?:\.\d+)?)', html)
-            if price_match:
-                try:
-                    price_str = price_match.group(1).replace(',', '')
-                    price = float(price_str)
-                    if price > 1:
-                        token_data['patterns'].append('💎HIGH_PRICE')
-                        self.pattern_frequency['💎HIGH_PRICE'] += 1
-                except:
-                    pass
 
             if token_data['patterns']:
                 logger.info(f"      ✅ {', '.join(token_data['patterns'][:3])}")
@@ -224,6 +255,10 @@ class CatapultAnalyzer:
         logger.info(f"🔄 СКАНУВАННЯ CATAPULT - {datetime.now().strftime('%H:%M:%S')}")
         logger.info("=" * 70)
 
+        # Virtual Display
+        if not self.init_virtual_display():
+            logger.error("❌ Virtual Display помилка")
+
         if not self.init_driver():
             return {
                 'timestamp': datetime.now().isoformat(),
@@ -237,7 +272,7 @@ class CatapultAnalyzer:
             html = self.fetch_page()
 
             if not html:
-                logger.error("❌ Не вдалося завантажити")
+                logger.error("❌ HTML пуст")
                 return {
                     'timestamp': datetime.now().isoformat(),
                     'total_tokens': 0,
@@ -249,7 +284,7 @@ class CatapultAnalyzer:
             tokens = self.extract_tokens(html)
 
             if not tokens:
-                logger.warning("⚠️ Реальних токенів не знайдено")
+                logger.warning("⚠️ Токенів не знайдено - повертаю пустий звіт")
                 return {
                     'timestamp': datetime.now().isoformat(),
                     'total_tokens': 0,
@@ -264,7 +299,7 @@ class CatapultAnalyzer:
                 token_data = self.analyze_token(token['url'], token['token_id'])
                 if token_data['patterns']:
                     self.all_tokens.append(token_data)
-                time.sleep(0.5)
+                time.sleep(1)
 
             top_patterns = sorted(
                 self.pattern_frequency.items(),
@@ -291,9 +326,13 @@ class CatapultAnalyzer:
             if self.driver:
                 self.driver.quit()
                 logger.info("🔌 Браузер закритий")
+            
+            if self.display:
+                self.display.stop()
+                logger.info("🔌 Virtual Display закритий")
 
 
 async def scan_catapult():
     """Публічна функція"""
-    analyzer = CatapultAnalyzer(headless=True)
+    analyzer = CatapultAnalyzer(headless=False)  # 🔧 False!
     return await analyzer.scan()
